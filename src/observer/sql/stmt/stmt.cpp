@@ -30,6 +30,8 @@ See the Mulan PSL v2 for more details. */
 #include "sql/stmt/show_tables_stmt.h"
 #include "sql/stmt/trx_begin_stmt.h"
 #include "sql/stmt/trx_end_stmt.h"
+#include<iostream>
+#include<string>
 
 bool stmt_type_ddl(StmtType type)
 {
@@ -69,6 +71,7 @@ RC Stmt::create_stmt(Db *db, ParsedSqlNode &sql_node, Stmt *&stmt)
     }
 
     case SCF_CREATE_TABLE: {
+      std::cout<<"Creating table: "<< sql_node.create_table.relation_name <<std::endl;
       return CreateTableStmt::create(db, sql_node.create_table, stmt);
     }
 
