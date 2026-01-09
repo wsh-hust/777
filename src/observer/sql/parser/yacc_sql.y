@@ -7,7 +7,6 @@
 
 #include "common/log/log.h"
 #include "common/lang/string.h"
-#include "common/type/date_type.h"
 #include "sql/parser/parse_defs.h"
 #include "sql/parser/yacc_sql.hpp"
 #include "sql/parser/lex_sql.h"
@@ -839,3 +838,4 @@ int sql_parse(const char *s, ParsedSqlResult *sql_result) {
   yylex_destroy(scanner);
   return result;
 }
+
