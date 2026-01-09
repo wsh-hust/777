@@ -7,6 +7,7 @@
 
 #include "common/log/log.h"
 #include "common/lang/string.h"
+#include "common/type/date_type.h"
 #include "sql/parser/parse_defs.h"
 #include "sql/parser/yacc_sql.hpp"
 #include "sql/parser/lex_sql.h"
@@ -73,6 +74,8 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
         INDEX
         CALC
         SELECT
+        INNER
+        JOIN
         DESC
         SHOW
         SYNC
@@ -88,6 +91,7 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
         INT_T
         STRING_T
         FLOAT_T
+        DATE_T
         VECTOR_T
         HELP
         EXIT
@@ -132,11 +136,13 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
   vector<Value> *                            value_list;
   vector<ConditionSqlNode> *                 condition_list;
   vector<RelAttrSqlNode> *                   rel_attr_list;
-  vector<string> *                           relation_list;
+  vector<vector<Value>> *                    values_list;
+
   vector<string> *                           key_list;
   char *                                     cstring;
   int                                        number;
   float                                      floats;
+  std::tuple<vector<string>, vector<ConditionSqlNode>> *relation_list;
 }
 
 %destructor { delete $$; } <condition>
@@ -146,6 +152,7 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
 %destructor { delete $$; } <expression>
 %destructor { delete $$; } <expression_list>
 %destructor { delete $$; } <value_list>
+%destructor { delete $$; } <values_list>
 %destructor { delete $$; } <condition_list>
 // %destructor { delete $$; } <rel_attr_list>
 %destructor { delete $$; } <relation_list>
@@ -168,11 +175,13 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
 %type <attr_infos>          attr_def_list
 %type <attr_info>           attr_def
 %type <value_list>          value_list
+%type <values_list>         values_list
 %type <condition_list>      where
 %type <condition_list>      condition_list
 %type <cstring>             storage_format
 %type <key_list>            primary_key
 %type <key_list>            attr_list
+%type <relation_list>       joined_relation
 %type <relation_list>       rel_list
 %type <expression>          expression
 %type <expression>          aggregate_expression
@@ -380,6 +389,7 @@ type:
     INT_T      { $$ = static_cast<int>(AttrType::INTS); }
     | STRING_T { $$ = static_cast<int>(AttrType::CHARS); }
     | FLOAT_T  { $$ = static_cast<int>(AttrType::FLOATS); }
+    | DATE_T   { $$ = static_cast<int>(AttrType::DATES); }
     | VECTOR_T { $$ = static_cast<int>(AttrType::VECTORS); }
     ;
 primary_key:
@@ -410,12 +420,27 @@ attr_list:
     ;
 
 insert_stmt:        /*insert   语句的语法解析树*/
-    INSERT INTO ID VALUES LBRACE value_list RBRACE 
+    INSERT INTO ID VALUES values_list
     {
       $$ = new ParsedSqlNode(SCF_INSERT);
       $$->insertion.relation_name = $3;
-      $$->insertion.values.swap(*$6);
-      delete $6;
+      $$->insertion.values.swap(*$5);
+      delete $5;
+    }
+    ;
+  
+values_list:
+    LBRACE value_list RBRACE
+    {
+      $$ = new vector<vector<Value>>();
+      $$->emplace_back(std::move(*$2));
+      delete $2;
+    }
+    | values_list COMMA LBRACE value_list RBRACE
+    {
+      $$ = $1;
+      $$->emplace_back(std::move(*$4));
+      delete $4;
     }
     ;
 
@@ -443,7 +468,15 @@ value:
     }
     |SSS {
       char *tmp = common::substr($1,1,strlen($1)-2);
-      $$ = new Value(tmp);
+      int days = 0;
+      string date_str(tmp);
+      if (OB_SUCC(DateType::parse(date_str, days))) {
+        $$ = new Value();
+        $$ -> set_int(days);
+        $$ -> set_type(AttrType::DATES);
+      } else {
+        $$ = new Value(tmp);
+      }
       free(tmp);
     }
     ;
@@ -492,12 +525,13 @@ select_stmt:        /*  select 语句的语法解析树*/
       }
 
       if ($4 != nullptr) {
-        $$->selection.relations.swap(*$4);
+        $$->selection.relations.swap(std::get<0>(*$4));
+        $$->selection.conditions.swap(std::get<1>(*$4));
         delete $4;
       }
 
       if ($5 != nullptr) {
-        $$->selection.conditions.swap(*$5);
+        $$->selection.conditions.insert($$->selection.conditions.end(), $5->begin(), $5->end());
         delete $5;
       }
 
@@ -594,21 +628,36 @@ relation:
       $$ = $1;
     }
     ;
-rel_list:
-    relation {
-      $$ = new vector<string>();
-      $$->push_back($1);
+joined_relation:
+  relation {
+    $$ = new tuple<vector<string>, vector<ConditionSqlNode>>;
+    std::get<0>(*$$).push_back($1);
+  }
+  | joined_relation INNER JOIN relation ON condition_list {
+    $$ = $1;
+    std::get<0>(*$$).push_back($4);
+    if ($6 != nullptr) {
+      std::get<1>(*$$).insert(std::get<1>(*$$).end(), $6->begin(), $6->end());
+      delete $6;
     }
-    | relation COMMA rel_list {
-      if ($3 != nullptr) {
-        $$ = $3;
-      } else {
-        $$ = new vector<string>;
-      }
+  }
+  | joined_relation INNER JOIN relation {
+    $$ = $1;
+    std::get<0>(*$$).push_back($4);
+  }
+  ;
 
-      $$->insert($$->begin(), $1);
-    }
-    ;
+rel_list:
+  joined_relation {
+    $$ = $1;
+  }
+  | rel_list COMMA joined_relation {
+    $$ = $1;
+    std::get<0>(*$$).insert(std::get<0>(*$$).end(), std::get<0>(*$3).begin(), std::get<0>(*$3).end());
+    std::get<1>(*$$).insert(std::get<1>(*$$).end(), std::get<1>(*$3).begin(), std::get<1>(*$3).end());
+    delete $3;
+  }
+  ;
 
 where:
     /* empty */
